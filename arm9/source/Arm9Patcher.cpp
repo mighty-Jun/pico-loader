@@ -13,6 +13,7 @@
 #include "patches/arm9/CardiReadRomIdCorePatch.h"
 #include "patches/arm9/OSResetSystemPatch.h"
 #include "patches/arm9/PokemonDownloaderArm9Patch.h"
+#include "patches/arm9/DownloadPlayArm9Patch.h"
 #include "patches/arm9/DSProtectArm9Patch.h"
 #include "patches/arm9/LastWindowCrcPatch.h"
 #include "patches/arm9/NandSave/FaceTrainingNandSavePatch.h"
@@ -29,6 +30,7 @@
 #include "SecureSysCallsUnusedSpaceLocator.h"
 #include "fastSearch.h"
 #include "gameCode.h"
+#include "DownloadPlay.h"
 #include "cache.h"
 #include "ApList.h"
 #include "patches/platform/LoaderPlatform.h"
@@ -166,7 +168,15 @@ Arm9Patcher::PatchResult Arm9Patcher::ApplyPatches(const LoaderPlatform* loaderP
     };
     PatchCollection patchCollection;
     OSResetSystemPatch* osResetSystemPatch = nullptr;
-    if (sdkVersion != 0)
+    bool isDownloadPlayApp = IsDownloadPlayApp(romHeader->gameCode);
+    if (isDownloadPlayApp)
+    {
+        // No card or save functions to patch; only reboot into Pico Loader for the downloaded child.
+        LOG_DEBUG("DS Download Play app, skipping game patches\n");
+        patchContext.GetPatchHeap().AddFreeSpace((void*)DOWNLOAD_PLAY_ARM9_PATCH_SPACE, DOWNLOAD_PLAY_ARM9_PATCH_SPACE_SIZE);
+        patchCollection.AddPatch(new DownloadPlayArm9Patch(loaderInfo));
+    }
+    if (sdkVersion != 0 && !isDownloadPlayApp)
     {
         if (*(vu32*)0x02FFF00C == GAMECODE("ADAJ") &&
             romHeader->arm9LoadAddress == 0x02004000 &&

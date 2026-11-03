@@ -4,6 +4,7 @@
 #include "SdkVersion.h"
 #include "sharedMemory.h"
 #include "gameCode.h"
+#include "DownloadPlay.h"
 #include "cache.h"
 #include "errorDisplay/ErrorDisplay.h"
 #include "patches/PatchCollection.h"
@@ -16,6 +17,7 @@
 #include "patches/arm7/DisableArm7WramClearPatch.h"
 #include "patches/arm7/sdk5/Sdk5DsiSdCardRedirectPatch.h"
 #include "patches/arm7/PokemonDownloaderArm7Patch.h"
+#include "patches/arm7/DownloadPlayArm7Patch.h"
 #include "patches/arm7/cheats/CheatEnginePatch.h"
 #include "Arm7Patcher.h"
 
@@ -71,7 +73,21 @@ void* Arm7Patcher::ApplyPatches(const LoaderPlatform* loaderPlatform, u32 cheats
         loaderPlatform
     };
     void* patchSpaceStart = nullptr;
-    if (sdkVersion != 0)
+    if (IsDownloadPlayApp(romHeader->gameCode))
+    {
+        // No card or save functions to patch; only reboot into Pico Loader for the downloaded child.
+        // The patch space is in main memory, so nothing has to be copied to the arm7 wram.
+        patchContext.GetPatchHeap().AddFreeSpace((void*)DOWNLOAD_PLAY_ARM7_PATCH_SPACE, DOWNLOAD_PLAY_ARM7_PATCH_SPACE_SIZE);
+        patchCollection.AddPatch(new DownloadPlayArm7Patch());
+        if (!patchCollection.TryPerformPatches(patchContext))
+        {
+            ErrorDisplay().PrintError("Failed to apply arm7 patches.");
+        }
+        dc_flushAll();
+        dc_drainWriteBuffer();
+        ic_invalidateAll();
+    }
+    else if (sdkVersion != 0)
     {
         mem_setNtrWramMapping(MEM_NTR_WRAM_ARM9, MEM_NTR_WRAM_ARM9);
         auto arm7ArenaPatch = new OsGetInitArenaLoPatch();
