@@ -81,7 +81,8 @@ private:
     void ClearMainMemory();
     void CreateRomClusterTable();
     bool TryLoadRomHeader(u32 romOffset);
-    bool TryOpenDownloadPlayCardRom();
+    bool TryOpenDownloadPlayCardRom(FIL* cardRomFile);
+    bool TryCheckDownloadPlayCardRom();
     void HandleAntiPiracy();
     void RemapWram();
     bool TryLoadArm9();

@@ -146,9 +146,14 @@ void NdsLoader::Load(BootMode bootMode)
         case BootMode::Multiboot:
         {
             // already in memory, but a Download Play child also needs the rom of the card it expects
-            if (isDownloadPlayChild && !TryOpenDownloadPlayCardRom())
+            if (isDownloadPlayChild)
             {
-                return;
+                if (!TryOpenDownloadPlayCardRom(&_romFile))
+                {
+                    return;
+                }
+
+                CreateRomClusterTable();
             }
             break;
         }
@@ -200,6 +205,21 @@ void NdsLoader::Load(BootMode bootMode)
         }
     }
 
+    // Download Play only has to reboot into Pico Loader for its child when the child should see a rom
+    // from the SD card as the inserted card. Without the config file it starts the child itself.
+    bool rebootForDownloadPlayChild = false;
+    if (bootMode == BootMode::Normal && IsDownloadPlayApp(_romHeader.gameCode) &&
+        f_stat(DOWNLOAD_PLAY_CARD_PATH, nullptr) == FR_OK)
+    {
+        // check the card rom now, to show errors before the download instead of after it
+        if (!TryCheckDownloadPlayCardRom())
+        {
+            return;
+        }
+
+        rebootForDownloadPlayChild = true;
+    }
+
     bool isHomebrew = (_romHeader.makerCode[0] == 0 && _romHeader.makerCode[1] == 0)
         || (_romHeader.arm9AutoLoadDoneHookAddress == 0 && _romHeader.arm7AutoLoadDoneHookAddress == 0)
         || _romHeader.arm7LoadAddress >= 0x03000000;
@@ -228,7 +248,7 @@ void NdsLoader::Load(BootMode bootMode)
     sendToArm9(IPC_COMMAND_ARM9_SET_ROM_FILE_INFO);
     sendToArm9(isHomebrew ? 0 : _romFile.dir_sect);
     sendToArm9(isHomebrew ? 0 : (u32)(_romFile.dir_ptr - _romFile.obj.fs->win));
-    sendToArm9((isCloneBootRom ? 1 : 0) | (_runInDSiMode ? 2 : 0));
+    sendToArm9((isCloneBootRom ? 1 : 0) | (_runInDSiMode ? 2 : 0) | (rebootForDownloadPlayChild ? 4 : 0));
 
     if (!isHomebrew)
     {
@@ -827,7 +847,7 @@ bool NdsLoader::TryLoadRomHeader(u32 romOffset)
     return true;
 }
 
-bool NdsLoader::TryOpenDownloadPlayCardRom()
+bool NdsLoader::TryOpenDownloadPlayCardRom(FIL* cardRomFile)
 {
     // The config file holds the path of the rom that the child should see as the inserted card.
     // Its save file has the same path with the extension .sav.
@@ -870,17 +890,15 @@ bool NdsLoader::TryOpenDownloadPlayCardRom()
     }
 
     LOG_DEBUG("Download Play card rom: %s\n", _cardRomPath);
-    if (f_open(&_romFile, _cardRomPath, FA_OPEN_EXISTING | FA_READ) != FR_OK)
+    if (f_open(cardRomFile, _cardRomPath, FA_OPEN_EXISTING | FA_READ) != FR_OK)
     {
         LOG_FATAL("Failed to open card rom file\n");
         ErrorDisplay().PrintError("Failed to open the card rom file.\n%s", _cardRomPath);
         return false;
     }
 
-    CreateRomClusterTable();
-
     UINT headerBytesRead = 0;
-    if (f_read(&_romFile, &_cardRomHeader, sizeof(_cardRomHeader), &headerBytesRead) != FR_OK ||
+    if (f_read(cardRomFile, &_cardRomHeader, sizeof(_cardRomHeader), &headerBytesRead) != FR_OK ||
         headerBytesRead != sizeof(_cardRomHeader))
     {
         LOG_FATAL("Failed to read card rom header\n");
@@ -901,6 +919,24 @@ bool NdsLoader::TryOpenDownloadPlayCardRom()
         return false;
     }
     strcpy(extension, ".sav");
+    return true;
+}
+
+bool NdsLoader::TryCheckDownloadPlayCardRom()
+{
+    // the same steps as when the child boots, but the rom is not kept open
+    auto cardRomFile = std::make_unique<FIL>();
+    if (!TryOpenDownloadPlayCardRom(cardRomFile.get()))
+    {
+        return false;
+    }
+    f_close(cardRomFile.get());
+
+    if (!CardSaveArranger().SetupCardSave(&_cardRomHeader, _cardSavePath))
+    {
+        ErrorDisplay().PrintError("Failed to setup save file.");
+        return false;
+    }
     return true;
 }
 

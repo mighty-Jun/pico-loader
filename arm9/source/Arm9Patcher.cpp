@@ -50,7 +50,7 @@ static const u32 sMiiUncompressBackwardPattern[] = { 0xE3500000, 0x0A000027, 0xE
 static const u32 sMiiUncompressBackwardPatternHybrid[] = { 0xE3500000, 0x0A000029, 0xE92D01F0, 0xE9100006 };
 
 Arm9Patcher::PatchResult Arm9Patcher::ApplyPatches(const LoaderPlatform* loaderPlatform, const ApListEntry* apListEntry,
-    bool isCloneBootRom, bool runInDSiMode, const loader_info_t* loaderInfo) const
+    bool isCloneBootRom, bool runInDSiMode, bool rebootForDownloadPlayChild, const loader_info_t* loaderInfo) const
 {
     auto romHeader = (const nds_header_ntr_t*)TWL_SHARED_MEMORY->ntrSharedMem.romHeader;
     auto twlRomHeader = (const nds_header_twl_t*)TWL_SHARED_MEMORY->twlRomHeader;
@@ -171,10 +171,13 @@ Arm9Patcher::PatchResult Arm9Patcher::ApplyPatches(const LoaderPlatform* loaderP
     bool isDownloadPlayApp = IsDownloadPlayApp(romHeader->gameCode);
     if (isDownloadPlayApp)
     {
-        // No card or save functions to patch; only reboot into Pico Loader for the downloaded child.
+        // No card or save functions to patch; at most reboot into Pico Loader for the downloaded child.
         LOG_DEBUG("DS Download Play app, skipping game patches\n");
-        patchContext.GetPatchHeap().AddFreeSpace((void*)DOWNLOAD_PLAY_ARM9_PATCH_SPACE, DOWNLOAD_PLAY_ARM9_PATCH_SPACE_SIZE);
-        patchCollection.AddPatch(new DownloadPlayArm9Patch(loaderInfo));
+        if (rebootForDownloadPlayChild)
+        {
+            patchContext.GetPatchHeap().AddFreeSpace((void*)DOWNLOAD_PLAY_ARM9_PATCH_SPACE, DOWNLOAD_PLAY_ARM9_PATCH_SPACE_SIZE);
+            patchCollection.AddPatch(new DownloadPlayArm9Patch(loaderInfo));
+        }
     }
     if (sdkVersion != 0 && !isDownloadPlayApp)
     {

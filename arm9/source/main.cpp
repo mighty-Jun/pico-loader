@@ -47,6 +47,7 @@ static u32 sRomDirSector;
 static u32 sRomDirSectorOffset;
 static u16 sIsCloneBootRom;
 static u16 sRunInDSiMode;
+static u16 sRebootForDownloadPlayChild;
 static loader_info_t sLoaderInfo;
 static void** sSoftResetCheatsPointer = nullptr;
 
@@ -154,6 +155,7 @@ static void handleApplyArm9PatchesCommand()
         sApListEntry.GetGameCode() == 0 ? nullptr : &sApListEntry,
         sIsCloneBootRom,
         sRunInDSiMode,
+        sRebootForDownloadPlayChild,
         &sLoaderInfo);
     sSoftResetCheatsPointer = result.softResetCheatsPointer;
     ipc_sendWordDirect(1);
@@ -163,7 +165,8 @@ static void handleApplyArm7PatchesCommand(u32 cheatsLength)
 {
     void* cheats = nullptr;
     char* bannerSavePath = nullptr;
-    void* patchSpaceStart = Arm7Patcher().ApplyPatches(sLoaderPlatform, cheatsLength, cheats, bannerSavePath, sRunInDSiMode);
+    void* patchSpaceStart = Arm7Patcher().ApplyPatches(sLoaderPlatform, cheatsLength, cheats, bannerSavePath,
+        sRunInDSiMode, sRebootForDownloadPlayChild);
     if (sSoftResetCheatsPointer != nullptr)
     {
         *sSoftResetCheatsPointer = cheats;
@@ -188,6 +191,7 @@ static void handleSetRomFileInfoCommand()
     u32 flags = receiveFromArm7();
     sIsCloneBootRom = (flags & 1) != 0;
     sRunInDSiMode = (flags & 2) != 0;
+    sRebootForDownloadPlayChild = (flags & 4) != 0;
 }
 
 static void handleInitializeLoaderInfoCommand()

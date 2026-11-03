@@ -34,7 +34,7 @@ static u32 correctAddress(u32 address, const nds_header_ntr_t* romHeader)
 }
 
 void* Arm7Patcher::ApplyPatches(const LoaderPlatform* loaderPlatform, u32 cheatsLength,
-    void*& cheatsPtr, char*& bannerSavePathPtr, bool runInDSiMode) const
+    void*& cheatsPtr, char*& bannerSavePathPtr, bool runInDSiMode, bool rebootForDownloadPlayChild) const
 {
     cheatsPtr = nullptr;
     auto romHeader = (const nds_header_ntr_t*)TWL_SHARED_MEMORY->ntrSharedMem.romHeader;
@@ -75,17 +75,20 @@ void* Arm7Patcher::ApplyPatches(const LoaderPlatform* loaderPlatform, u32 cheats
     void* patchSpaceStart = nullptr;
     if (IsDownloadPlayApp(romHeader->gameCode))
     {
-        // No card or save functions to patch; only reboot into Pico Loader for the downloaded child.
+        // No card or save functions to patch; at most reboot into Pico Loader for the downloaded child.
         // The patch space is in main memory, so nothing has to be copied to the arm7 wram.
-        patchContext.GetPatchHeap().AddFreeSpace((void*)DOWNLOAD_PLAY_ARM7_PATCH_SPACE, DOWNLOAD_PLAY_ARM7_PATCH_SPACE_SIZE);
-        patchCollection.AddPatch(new DownloadPlayArm7Patch());
-        if (!patchCollection.TryPerformPatches(patchContext))
+        if (rebootForDownloadPlayChild)
         {
-            ErrorDisplay().PrintError("Failed to apply arm7 patches.");
+            patchContext.GetPatchHeap().AddFreeSpace((void*)DOWNLOAD_PLAY_ARM7_PATCH_SPACE, DOWNLOAD_PLAY_ARM7_PATCH_SPACE_SIZE);
+            patchCollection.AddPatch(new DownloadPlayArm7Patch());
+            if (!patchCollection.TryPerformPatches(patchContext))
+            {
+                ErrorDisplay().PrintError("Failed to apply arm7 patches.");
+            }
+            dc_flushAll();
+            dc_drainWriteBuffer();
+            ic_invalidateAll();
         }
-        dc_flushAll();
-        dc_drainWriteBuffer();
-        ic_invalidateAll();
     }
     else if (sdkVersion != 0)
     {
