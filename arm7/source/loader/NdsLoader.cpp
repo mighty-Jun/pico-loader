@@ -930,7 +930,28 @@ bool NdsLoader::TryCheckDownloadPlayCardRom()
     {
         return false;
     }
+
+    // The child's card reads need the whole cluster chain of the rom in the shared cluster table.
+    // That table still holds the one of Download Play itself, so check with a table of the same size.
+    const u32 clusterTableLength = sizeof(SHARED_ROM_FILE_INFO->clusterMap) / sizeof(u32);
+    auto clusterTable = std::make_unique<DWORD[]>(clusterTableLength);
+    clusterTable[0] = clusterTableLength;
+    cardRomFile->cltbl = clusterTable.get();
+    FRESULT result = f_lseek(cardRomFile.get(), CREATE_LINKMAP);
     f_close(cardRomFile.get());
+    if (result != FR_OK)
+    {
+        LOG_FATAL("Failed to make card rom cluster table. Result: %d\n", result);
+        if (result == FR_NOT_ENOUGH_CORE)
+        {
+            ErrorDisplay().PrintError("The card rom file is too fragmented.\n%s", _cardRomPath);
+        }
+        else
+        {
+            ErrorDisplay().PrintError("Failed to read the card rom file.\n%s", _cardRomPath);
+        }
+        return false;
+    }
 
     if (!CardSaveArranger().SetupCardSave(&_cardRomHeader, _cardSavePath))
     {
