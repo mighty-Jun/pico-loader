@@ -65,17 +65,23 @@ private:
     nds_header_twl_t _romHeader;
     bool _runInDSiMode = true;
     DsiWareSaveResult _dsiwareSaveResult;
+    // the rom that a DS Download Play child sees as the inserted card
+    nds_header_ntr_t _cardRomHeader;
+    TCHAR _cardRomPath[256];
+    TCHAR _cardSavePath[256];
 
     bool IsCloneBootRom(u32 romOffset);
     bool IsValidDSiRom();
     void ApplyArm7Patches();
     void PreprocessCheats();
-    void SetupSharedMemory(u32 cardId, u32 agbMem, u32 resetParam, u32 romOffset, u32 bootType);
+    void SetupSharedMemory(const nds_header_ntr_t* cardRomHeader, u32 cardId, u32 agbMem,
+        u32 resetParam, u32 romOffset, u32 bootType);
     void LoadFirmwareUserSettings();
     bool ShouldAttemptDldiPatch();
     void ClearMainMemory();
     void CreateRomClusterTable();
     bool TryLoadRomHeader(u32 romOffset);
+    bool TryOpenDownloadPlayCardRom();
     void HandleAntiPiracy();
     void RemapWram();
     bool TryLoadArm9();

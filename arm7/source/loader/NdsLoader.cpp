@@ -1,4 +1,5 @@
 #include "common.h"
+#include <memory>
 #include <string.h>
 #include <libtwl/rtos/rtosIrq.h>
 #include <libtwl/sys/swi.h>
@@ -14,6 +15,7 @@
 #include "fileInfo.h"
 #include "CardSaveArranger.h"
 #include "gameCode.h"
+#include "DownloadPlay.h"
 #include "ApList.h"
 #include "ApListFactory.h"
 #include "TwlConfig.h"
@@ -33,10 +35,21 @@
 #define AP_LIST_PATH      "/_pico/aplist.bin"
 #define PATCH_LIST_PATH   "/_pico/patchlist.bin"
 #define BIOS_NDS7_PATH    "/_pico/biosnds7.rom"
+#define DOWNLOAD_PLAY_CARD_PATH "/_pico/dlpcart.txt"
 
 typedef void (*entrypoint_t)(void);
 
 static const InverseKmpMatcher sDldiStubMatcher { (const u32[]) { ~0xBF8DA5EDu, ~0x69684320u, ~0x6D6873u } };
+
+/// @brief Returns the chip id of a retail card for the given header: Macronix, the size byte
+///        as melonDS computes it and bit 31 set. The Gen 4 card emulation of the DSpico firmware
+///        uses this id, and the Poke Transfer child accepted it on hardware.
+static u32 GetRetailCardChipId(const nds_header_ntr_t* header)
+{
+    u32 capacity = 0x20000u << header->deviceCapacity;
+    u32 sizeByte = capacity <= (128u << 20) ? (capacity >> 20) - 1 : 0x100 - (capacity >> 28);
+    return 0x80000000 | ((sizeByte & 0xFF) << 8) | 0xC2;
+}
 
 void NdsLoader::Load(BootMode bootMode)
 {
@@ -57,6 +70,18 @@ void NdsLoader::Load(BootMode bootMode)
     if (romOffset < 0x8000)
     {
         romOffset = 0;
+    }
+
+    // The Download Play patch enters Pico Loader in multiboot mode instead of starting the child.
+    // The header that Download Play keeps for the child as the inserted card is then its own.
+    bool isDownloadPlayChild = bootMode == BootMode::Multiboot &&
+        IsDownloadPlayApp(((const nds_header_ntr_t*)DOWNLOAD_PLAY_CARD_ROM_HEADER)->gameCode);
+    std::unique_ptr<u8[]> downloadPlayBootInfo;
+    if (isDownloadPlayChild)
+    {
+        // SetupSharedMemory overwrites it in ds mode
+        downloadPlayBootInfo = std::make_unique<u8[]>(DOWNLOAD_PLAY_BOOT_INFO_SIZE);
+        memcpy(downloadPlayBootInfo.get(), (const void*)DOWNLOAD_PLAY_BOOT_INFO, DOWNLOAD_PLAY_BOOT_INFO_SIZE);
     }
 
     if (bootMode != BootMode::Multiboot)
@@ -120,7 +145,11 @@ void NdsLoader::Load(BootMode bootMode)
     {
         case BootMode::Multiboot:
         {
-            // already in memory
+            // already in memory, but a Download Play child also needs the rom of the card it expects
+            if (isDownloadPlayChild && !TryOpenDownloadPlayCardRom())
+            {
+                return;
+            }
             break;
         }
         case BootMode::SdkResetSystem:
@@ -156,8 +185,11 @@ void NdsLoader::Load(BootMode bootMode)
     if (bootMode == BootMode::Multiboot)
     {
         memcpy(&_romHeader, TWL_SHARED_MEMORY->ntrSharedMem.romHeader, sizeof(TWL_SHARED_MEMORY->ntrSharedMem.romHeader));
-        _romFile.dir_sect = 0;
-        _romFile.dir_ptr = gFatFs.win;
+        if (!isDownloadPlayChild)
+        {
+            _romFile.dir_sect = 0;
+            _romFile.dir_ptr = gFatFs.win;
+        }
     }
     else
     {
@@ -236,6 +268,14 @@ void NdsLoader::Load(BootMode bootMode)
                 HandleAntiPiracy();
             }
         }
+        else if (isDownloadPlayChild)
+        {
+            if (!CardSaveArranger().SetupCardSave(&_cardRomHeader, _cardSavePath))
+            {
+                ErrorDisplay().PrintError("Failed to setup save file.");
+                return;
+            }
+        }
     }
 
     if (bootMode == BootMode::Normal)
@@ -248,7 +288,21 @@ void NdsLoader::Load(BootMode bootMode)
         bootType = BOOT_TYPE_MULTIBOOT;
     }
 
-    SetupSharedMemory(cardId, agbMem, resetParam, romOffset, bootType);
+    const nds_header_ntr_t* cardRomHeader = &_romHeader;
+    if (isDownloadPlayChild)
+    {
+        cardRomHeader = &_cardRomHeader;
+        cardId = GetRetailCardChipId(&_cardRomHeader);
+    }
+
+    SetupSharedMemory(cardRomHeader, cardId, agbMem, resetParam, romOffset, bootType);
+
+    if (isDownloadPlayChild)
+    {
+        // give the child its boot information back, with the header of the card rom
+        memcpy((void*)DOWNLOAD_PLAY_BOOT_INFO, downloadPlayBootInfo.get(), DOWNLOAD_PLAY_BOOT_INFO_SIZE);
+        memcpy((void*)DOWNLOAD_PLAY_CARD_ROM_HEADER, &_cardRomHeader, sizeof(TWL_SHARED_MEMORY->ntrSharedMem.cardRomHeader));
+    }
 
     if (Environment::IsDsiMode())
     {
@@ -335,7 +389,7 @@ void NdsLoader::Load(BootMode bootMode)
         *(vu32*)0x03FFFFC8 = 0;
     }
 
-    if (bootMode != BootMode::Multiboot)
+    if (bootMode != BootMode::Multiboot || isDownloadPlayChild)
     {
         f_close(&_romFile);
     }
@@ -632,14 +686,15 @@ void NdsLoader::PreprocessCheats()
     }
 }
 
-void NdsLoader::SetupSharedMemory(u32 cardId, u32 agbMem, u32 resetParam, u32 romOffset, u32 bootType)
+void NdsLoader::SetupSharedMemory(const nds_header_ntr_t* cardRomHeader, u32 cardId, u32 agbMem,
+    u32 resetParam, u32 romOffset, u32 bootType)
 {
-    memcpy(TWL_SHARED_MEMORY->ntrSharedMem.cardRomHeader, &_romHeader, sizeof(nds_header_ntr_t) - 0x10);
+    memcpy(TWL_SHARED_MEMORY->ntrSharedMem.cardRomHeader, cardRomHeader, sizeof(nds_header_ntr_t) - 0x10);
     memcpy(TWL_SHARED_MEMORY->ntrSharedMem.romHeader, &_romHeader, sizeof(nds_header_ntr_t));
     *(vu32*)&TWL_SHARED_MEMORY->ntrSharedMem.bootCheckInfo[0] = cardId;
     *(vu32*)&TWL_SHARED_MEMORY->ntrSharedMem.bootCheckInfo[4] = cardId;
-    *(vu16*)&TWL_SHARED_MEMORY->ntrSharedMem.bootCheckInfo[8] = _romHeader.headerCrc;
-    *(vu16*)&TWL_SHARED_MEMORY->ntrSharedMem.bootCheckInfo[0xA] = _romHeader.secureAreaCrc;
+    *(vu16*)&TWL_SHARED_MEMORY->ntrSharedMem.bootCheckInfo[8] = cardRomHeader->headerCrc;
+    *(vu16*)&TWL_SHARED_MEMORY->ntrSharedMem.bootCheckInfo[0xA] = cardRomHeader->secureAreaCrc;
     *(vu32*)&TWL_SHARED_MEMORY->ntrSharedMem.bootCheckInfo[0x10] = 0x5835; // use correct card id address
     *(vu32*)&TWL_SHARED_MEMORY->ntrSharedMem.isDebuggerData[0x1C] = agbMem;
     TWL_SHARED_MEMORY->ntrSharedMem.resetParam = resetParam;
@@ -662,6 +717,7 @@ void NdsLoader::SetupSharedMemory(u32 cardId, u32 agbMem, u32 resetParam, u32 ro
         TWL_SHARED_MEMORY->sysMenuVersionInfoContentLastInitialCode = 'P'; // europe
     }
 
+    // in ds mode these share memory with 0x023FC000 and 0x023FE000
     memcpy(TWL_SHARED_MEMORY->twlCardRomHeader, &_romHeader, sizeof(nds_header_twl_t));
     memcpy(TWL_SHARED_MEMORY->twlRomHeader, &_romHeader, sizeof(nds_header_twl_t));
 }
@@ -768,6 +824,83 @@ bool NdsLoader::TryLoadRomHeader(u32 romOffset)
     }
 
     LOG_DEBUG("Rom header loaded\n");
+    return true;
+}
+
+bool NdsLoader::TryOpenDownloadPlayCardRom()
+{
+    // The config file holds the path of the rom that the child should see as the inserted card.
+    // Its save file has the same path with the extension .sav.
+    auto file = std::make_unique<FIL>();
+    if (f_open(file.get(), DOWNLOAD_PLAY_CARD_PATH, FA_OPEN_EXISTING | FA_READ) != FR_OK)
+    {
+        LOG_FATAL("Failed to open " DOWNLOAD_PLAY_CARD_PATH "\n");
+        ErrorDisplay().PrintError("Failed to open " DOWNLOAD_PLAY_CARD_PATH ".");
+        return false;
+    }
+    UINT bytesRead = 0;
+    FRESULT result = f_read(file.get(), _cardRomPath, sizeof(_cardRomPath) - 1, &bytesRead);
+    f_close(file.get());
+    if (result != FR_OK)
+    {
+        LOG_FATAL("Failed to read " DOWNLOAD_PLAY_CARD_PATH ". Result: %d\n", result);
+        ErrorDisplay().PrintError("Failed to read " DOWNLOAD_PLAY_CARD_PATH ".");
+        return false;
+    }
+    _cardRomPath[bytesRead] = 0;
+
+    // first line only, without a utf-8 byte order mark and trailing spaces
+    char* path = _cardRomPath;
+    if (strncmp(path, "\xEF\xBB\xBF", 3) == 0)
+    {
+        path += 3;
+    }
+    u32 length = strcspn(path, "\r\n");
+    while (length > 0 && (path[length - 1] == ' ' || path[length - 1] == '\t'))
+    {
+        length--;
+    }
+    memmove(_cardRomPath, path, length);
+    _cardRomPath[length] = 0;
+    if (length == 0)
+    {
+        LOG_FATAL("No card rom path in " DOWNLOAD_PLAY_CARD_PATH "\n");
+        ErrorDisplay().PrintError("No card rom path in " DOWNLOAD_PLAY_CARD_PATH ".");
+        return false;
+    }
+
+    LOG_DEBUG("Download Play card rom: %s\n", _cardRomPath);
+    if (f_open(&_romFile, _cardRomPath, FA_OPEN_EXISTING | FA_READ) != FR_OK)
+    {
+        LOG_FATAL("Failed to open card rom file\n");
+        ErrorDisplay().PrintError("Failed to open the card rom file.\n%s", _cardRomPath);
+        return false;
+    }
+
+    CreateRomClusterTable();
+
+    UINT headerBytesRead = 0;
+    if (f_read(&_romFile, &_cardRomHeader, sizeof(_cardRomHeader), &headerBytesRead) != FR_OK ||
+        headerBytesRead != sizeof(_cardRomHeader))
+    {
+        LOG_FATAL("Failed to read card rom header\n");
+        ErrorDisplay().PrintError("Failed to read the card rom header.\n%s", _cardRomPath);
+        return false;
+    }
+
+    strcpy(_cardSavePath, _cardRomPath);
+    char* extension = strrchr(_cardSavePath, '.');
+    if (extension == nullptr || strchr(extension, '/') != nullptr)
+    {
+        extension = _cardSavePath + length;
+    }
+    if (extension + sizeof(".sav") > _cardSavePath + sizeof(_cardSavePath))
+    {
+        LOG_FATAL("Card save path too long\n");
+        ErrorDisplay().PrintError("The card rom path is too long.\n%s", _cardRomPath);
+        return false;
+    }
+    strcpy(extension, ".sav");
     return true;
 }
 
