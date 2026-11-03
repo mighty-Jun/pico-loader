@@ -1,6 +1,6 @@
 #include "common.h"
 #include "../PatchContext.h"
-#include "PokemonDownloaderArm7PatchAsm.h"
+#include "DownloadPlayArm7PatchAsm.h"
 #include "DownloadPlayArm7Patch.h"
 
 // End of the arm7 child boot function (copied to 0x0380F62C before the child starts):
@@ -28,7 +28,8 @@ void DownloadPlayArm7Patch::ApplyPatch(PatchContext& patchContext)
     }
 
     // Same handshake as for the Pokemon downloader: wait for the arm9 to load Pico Loader, then enter it.
-    auto patchCode = patchContext.GetPatchCodeCollection().AddUniquePatchCode<PokemonDownloaderArm7PatchCode>(
+    // The wait itself happens in the arm7 wram, see DownloadPlayArm7PatchAsm.s.
+    auto patchCode = patchContext.GetPatchCodeCollection().AddUniquePatchCode<DownloadPlayArm7PatchCode>(
         patchContext.GetPatchHeap());
 
     // Let the boot function load the reboot code address instead of the child entry point.
